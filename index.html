@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>⚡ GopuOS — Multimodal Chat</title>
+
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              bg: "#0B0F14",
+              panel: "#0F1520",
+              panel2: "#121826",
+              accent: "#7C3AED",
+              accent2: "#22D3EE",
+              text: "#E5E7EB",
+              sub: "#9CA3AF",
+            },
+          },
+        },
+      };
+    </script>
+
+    <!-- React + ReactDOM via CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { height: 100%; background: #0B0F14; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-thumb { background: #1F2937; border-radius: 8px; }
+      pre { white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+  </head>
+  <body class="h-full">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel">
+      const BACKEND_URL = "https://Mauricio-100-agent-ai.hf.space/infer";
+
+      // Utilities
+      const readFileAsDataURL = (file) =>
+        new Promise((resolve, reject) => {
+          if (!file) return resolve(null);
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+      const ts = () => new Date().toLocaleTimeString();
+
+      // Shared controls component
+      const Controls = ({ systemPrompt, setSystemPrompt, temperature, setTemperature, maxNewTokens, setMaxNewTokens, topP, setTopP }) => (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="bg-panel2 p-3 rounded-lg">
+            <label className="text-sub text-sm">Prompt système</label>
+            <textarea
+              className="mt-1 w-full bg-bg border border-gray-700 rounded-md p-2 text-text h-24"
+              placeholder="Définis le style, le rôle, les contraintes..."
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+            />
+          </div>
+          <div className="bg-panel2 p-3 rounded-lg">
+            <label className="text-sub text-sm">Température: {temperature}</label>
+            <input
+              type="range"
+              min="0.1"
+              max="1.5"
+              step="0.1"
+              value={temperature}
+              onChange={(e) => setTemperature(parseFloat(e.target.value))}
+              className="w-full mt-2"
+            />
+            <label className="text-sub text-sm mt-3 block">Top‑p: {topP}</label>
+            <input
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              value={topP}
+              onChange={(e) => setTopP(parseFloat(e.target.value))}
+              className="w-full mt-2"
+            />
+          </div>
+          <div className="bg-panel2 p-3 rounded-lg">
+            <label className="text-sub text-sm">Max new tokens: {maxNewTokens}</label>
+            <input
+              type="range"
+              min="50"
+              max="500"
+              step="10"
+              value={maxNewTokens}
+              onChange={(e) => setMaxNewTokens(parseInt(e.target.value))}
+              className="w-full mt-2"
+            />
+            <div className="text-sub text-xs mt-2">Ajuste la longueur de génération.</div>
+          </div>
+        </div>
+      );
+
+      // Chat bubble
+      const Bubble = ({ role, content }) => {
+        const isUser = role === "user";
+        return (
+          <div className={"flex " + (isUser ? "justify-end" : "justify-start")}>
+            <div className={(isUser ? "bg-accent" : "bg-panel2") + " max-w-2xl p-3 rounded-2xl text-sm text-text whitespace-pre-wrap"}>
+              {content}
+            </div>
+          </div>
+        );
+      };
+
+      const Sidebar = ({ conversations, activeId, setActiveId, newConversation }) => (
+        <div className="h-full bg-panel2 border-r border-gray-800 p-3 flex flex-col">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-text font-semibold">Conversations</div>
+            <button
+              className="px-3 py-1 bg-accent text-white rounded-md text-sm"
+              onClick={newConversation}
+            >
+              Nouveau
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto space-y-2">
+            {conversations.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setActiveId(c.id)}
+                className={
+                  "w-full text-left p-2 rounded-md " +
+                  (c.id === activeId ? "bg-panel" : "hover:bg-panel")
+                }
+              >
+                <div className="text-text text-sm">{c.title || "Sans titre"}</div>
+                <div className="text-sub text-xs">{c.lastUpdated || ts()}</div>
+              </button>
+            ))}
+          </div>
+          <div className="text-sub text-xs mt-3">GopuOS — Multimodal Chat</div>
+        </div>
+      );
+
+      const Tabs = ({ activeTab, setActiveTab }) => {
+        const tabs = [
+          { key: "text", label: "💬 Texte" },
+          { key: "image", label: "🖼️ Image" },
+          { key: "audio", label: "🎙️ Voix" },
+          { key: "video", label: "🎥 Vidéo" },
+          { key: "web", label: "🌐 Web" },
+        ];
+        return (
+          <div className="flex gap-2 mb-3">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setActiveTab(t.key)}
+                className={
+                  "px-3 py-2 rounded-md text-sm " +
+                  (activeTab === t.key
+                    ? "bg-accent text-white"
+                    : "bg-panel2 text-text hover:bg-panel")
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        );
+      };
+
+      const App = () => {
+        // State
+        const [conversations, setConversations] = React.useState([
+          { id: "conv-1", title: "Session 1", lastUpdated: ts(), messages: [] },
+        ]);
+        const [activeId, setActiveId] = React.useState("conv-1");
+        const [activeTab, setActiveTab] = React.useState("text");
+
+        // Controls
+        const [systemPrompt, setSystemPrompt] = React.useState("");
+        const [temperature, setTemperature] = React.useState(0.7);
+        const [maxNewTokens, setMaxNewTokens] = React.useState(200);
+        const [topP, setTopP] = React.useState(0.9);
+
+        // Inputs
+        const [userText, setUserText] = React.useState("");
+        const [imageFile, setImageFile] = React.useState(null);
+        const [audioFile, setAudioFile] = React.useState(null);
+        const [videoFile, setVideoFile] = React.useState(null);
+        const [webQuery, setWebQuery] = React.useState("");
+
+        const current = conversations.find((c) => c.id === activeId);
+
+        const updateConversation = (msgs, titleUpdate) => {
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === activeId
+                ? {
+                    ...c,
+                    messages: msgs,
+                    title: titleUpdate ?? c.title,
+                    lastUpdated: ts(),
+                  }
+                : c
+            )
+          );
+        };
+
+        const newConversation = () => {
+          const id = "conv-" + Math.random().toString(36).slice(2, 8);
+          const conv = { id, title: "Nouvelle session", lastUpdated: ts(), messages: [] };
+          setConversations((prev) => [conv, ...prev]);
+          setActiveId(id);
+        };
+
+        const sendToBackend = async (inputText) => {
+          const payload = {
+            input: inputText,
+            system_prompt: systemPrompt,
+            temperature,
+            max_new_tokens: maxNewTokens,
+            top_p: topP,
+          };
+          const res = await fetch(BACKEND_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            const txt = await res.text();
+            throw new Error(`HTTP ${res.status}: ${txt}`);
+          }
+          const data = await res.json();
+          return data.generated_text || JSON.stringify(data);
+        };
+
+        const onSend = async () => {
+          try {
+            let composedInput = "";
+
+            if (activeTab === "text") {
+              if (!userText.trim()) return;
+              composedInput = userText.trim();
+
+            } else if (activeTab === "image") {
+              if (!imageFile) return;
+              const dataUrl = await readFileAsDataURL(imageFile);
+              composedInput = `Analyse l'image ci-dessous.\n[IMAGE_DATA_URL]: ${dataUrl}`;
+
+            } else if (activeTab === "audio") {
+              if (!audioFile) return;
+              const dataUrl = await readFileAsDataURL(audioFile);
+              composedInput = `Transcris ou résume l'audio ci-dessous.\n[AUDIO_DATA_URL]: ${dataUrl}`;
+
+            } else if (activeTab === "video") {
+              if (!videoFile) return;
+              const dataUrl = await readFileAsDataURL(videoFile);
+              composedInput = `Analyse ou résume la vidéo ci-dessous.\n[VIDEO_DATA_URL]: ${dataUrl}`;
+
+            } else if (activeTab === "web") {
+              if (!webQuery.trim()) return;
+              composedInput = `Recherche et synthèse sur: ${webQuery.trim()}. Fournis sources et résumé clair.`;
+            }
+
+            const userMsg = { role: "user", content: composedInput };
+            const newMsgs = [...current.messages, userMsg];
+            updateConversation(newMsgs, current.title || composedInput.slice(0, 32));
+
+            const assistantText = await sendToBackend(composedInput);
+            const finalMsgs = [...newMsgs, { role: "assistant", content: assistantText }];
+            updateConversation(finalMsgs);
+
+            // reset minimal per tab
+            if (activeTab === "text") setUserText("");
+            if (activeTab === "web") setWebQuery("");
+
+          } catch (err) {
+            const newMsgs = [
+              ...current.messages,
+              { role: "assistant", content: `Erreur: ${err.message}` },
+            ];
+            updateConversation(newMsgs);
+          }
+        };
+
+        const DisabledNote = ({ text }) => (
+          <div className="text-sub text-xs mt-2">{text}</div>
+        );
+
+        return (
+          <div className="h-full grid grid-cols-1 lg:grid-cols-12">
+            <div className="lg:col-span-3 hidden lg:block">
+              <Sidebar
+                conversations={conversations}
+                activeId={activeId}
+                setActiveId={setActiveId}
+                newConversation={newConversation}
+              />
+            </div>
+            <div className="lg:col-span-9 col-span-12 flex flex-col h-full">
+              <div className="p-4 border-b border-gray-800 bg-panel2">
+                <div className="flex items-center justify-between">
+                  <div className="text-text font-semibold">⚡ GopuOS — Multimodal Chat</div>
+                  <div className="text-sub text-xs">Backend: {BACKEND_URL}</div>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-4 overflow-y-auto flex-1">
+                <Controls
+                  systemPrompt={systemPrompt}
+                  setSystemPrompt={setSystemPrompt}
+                  temperature={temperature}
+                  setTemperature={setTemperature}
+                  maxNewTokens={maxNewTokens}
+                  setMaxNewTokens={setMaxNewTokens}
+                  topP={topP}
+                  setTopP={setTopP}
+                />
+
+                <Tabs activeTab={activeTab} setActiveTab={setActiveTab} />
+
+                {/* Active Tab Inputs */}
+                {activeTab === "text" && (
+                  <div className="bg-panel2 p-4 rounded-lg">
+                    <label className="text-sub text-sm mb-2 block">Message</label>
+                    <textarea
+                      className="w-full bg-bg border border-gray-700 rounded-md p-3 text-text h-32"
+                      placeholder="Pose ta question ou décris ta tâche..."
+                      value={userText}
+                      onChange={(e) => setUserText(e.target.value)}
+                    />
+                    <div className="flex justify-end mt-3">
+                      <button
+                        onClick={onSend}
+                        className="px-4 py-2 bg-accent text-white rounded-md hover:bg-purple-700"
+                      >
+                        Envoyer
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "image" && (
+                  <div className="bg-panel2 p-4 rounded-lg">
+                    <label className="text-sub text-sm mb-2 block">Image</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+                      className="w-full text-text"
+                    />
+                    <DisabledNote text="L'image est encodée en Data URL et transmise dans le message au backend texte pour une réaction multimodale simple." />
+                    <div className="flex justify-end mt-3">
+                      <button
+                        onClick={onSend}
+                        className="px-4 py-2 bg-accent text-white rounded-md hover:bg-purple-700"
+                      >
+                        Analyser
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "audio" && (
+                  <div className="bg-panel2 p-4 rounded-lg">
+                    <label className="text-sub text-sm mb-2 block">Audio</label>
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
+                      className="w-full text-text"
+                    />
+                    <DisabledNote text="L'audio est encodé en Data URL et transmis comme contexte au backend texte." />
+                    <div className="flex justify-end mt-3">
+                      <button
+                        onClick={onSend}
+                        className="px-4 py-2 bg-accent text-white rounded-md hover:bg-purple-700"
+                      >
+                        Transcrire
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "video" && (
+                  <div className="bg-panel2 p-4 rounded-lg">
+                    <label className="text-sub text-sm mb-2 block">Vidéo</label>
+                    <input
+                      type="file"
+                      accept="video/*"
+                      onChange={(e) => setVideoFile(e.target.files?.[0] || null)}
+                      className="w-full text-text"
+                    />
+                    <DisabledNote text="La vidéo est encodée en Data URL et résumée via le backend texte." />
+                    <div className="flex justify-end mt-3">
+                      <button
+                        onClick={onSend}
+                        className="px-4 py-2 bg-accent text-white rounded-md hover:bg-purple-700"
+                      >
+                        Résumer
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "web" && (
+                  <div className="bg-panel2 p-4 rounded-lg">
+                    <label className="text-sub text-sm mb-2 block">Requête</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: tendances IA cette semaine"
+                      className="w-full bg-bg border border-gray-700 rounded-md p-2 text-text"
+                      value={webQuery}
+                      onChange={(e) => setWebQuery(e.target.value)}
+                    />
+                    <DisabledNote text="La recherche est formulée textuellement et déléguée au backend. Tu pourras brancher un vrai moteur plus tard." />
+                    <div className="flex justify-end mt-3">
+                      <button
+                        onClick={onSend}
+                        className="px-4 py-2 bg-accent text-white rounded-md hover:bg-purple-700"
+                      >
+                        Rechercher
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Messages */}
+                <div className="bg-panel2 p-4 rounded-lg space-y-3">
+                  <div className="text-sub text-sm mb-2">Historique</div>
+                  {current.messages.length === 0 && (
+                    <div className="text-sub text-sm">Aucun message pour le moment.</div>
+                  )}
+                  {current.messages.map((m, idx) => (
+                    <Bubble key={idx} role={m.role} content={m.content} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-3 border-t border-gray-800 bg-panel2 text-sub text-xs">
+                GopuOS • Réglages: Température {temperature}, Top‑p {topP}, Max tokens {maxNewTokens}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
